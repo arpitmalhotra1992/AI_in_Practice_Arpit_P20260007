@@ -1,0 +1,107 @@
+{
+  "n_questions": 42,
+  "excluded_questions": ["Q36", "Q38", "Q39"],
+  "exclusion_reason": "no relevant document; recall/nDCG undefined",
+
+  "baseline": {
+    "config": "sliding-800, dense",
+    "chunks": 91,
+    "hit_rate@1": 0.7857,
+    "recall@5": 0.8452,
+    "mrr": 0.8451,
+    "ndcg@10": 0.8053
+  },
+
+  "part_a_chunking": {
+    "a1_strategies_at_800": {
+      "fixed":     {"ndcg@10": 0.7952, "chunks": 83},
+      "sliding":   {"ndcg@10": 0.8053, "chunks": 91},
+      "recursive": {"ndcg@10": 0.8251, "chunks": 98},
+      "markdown":  {"ndcg@10": 0.8458, "chunks": 164}
+    },
+    "a2_size_sweep_markdown": {
+      "400":  {"ndcg@10": 0.8527, "chunks": 235},
+      "800":  {"ndcg@10": 0.8458, "chunks": 164},
+      "1600": {"ndcg@10": 0.8075, "chunks": 150}
+    },
+    "a3_heading_prefix_markdown_800": {
+      "with_prefix":    {"hit_rate@1": 0.7619, "hit_rate@5": 0.9762, "mrr": 0.8720, "ndcg@10": 0.8458},
+      "without_prefix": {"hit_rate@1": 0.6190, "hit_rate@5": 1.0000, "mrr": 0.7837, "ndcg@10": 0.7915}
+    },
+    "a4_failure_case": {
+      "question_id": "Q37",
+      "question": "Does Aurora cover treatment in Singapore, and up to what limit?",
+      "relevant_docs": ["exclusions", "plans-overview"],
+      "hit_rate@5": 0.0
+    },
+    "winner": "markdown-400"
+  },
+
+  "part_b_retrieval": {
+    "chunking": "markdown-400",
+    "b1_overall": {
+      "dense":  {"hit_rate@1": 0.7857, "hit_rate@5": 0.9762, "recall@5": 0.9028, "mrr": 0.8800, "ndcg@10": 0.8527, "latency_p95_ms": 0.5029},
+      "bm25":   {"hit_rate@1": 0.4762, "hit_rate@5": 0.9286, "recall@5": 0.7956, "mrr": 0.6698, "ndcg@10": 0.6978, "latency_p95_ms": 0.4810},
+      "hybrid": {"hit_rate@1": 0.6667, "hit_rate@5": 0.9762, "recall@5": 0.8631, "mrr": 0.7976, "ndcg@10": 0.7949, "latency_p95_ms": 0.9424}
+    },
+    "b2_mechanism": {
+      "Q44_identifier": {"dense_mrr": 0.50, "bm25_mrr": 1.00, "hybrid_mrr": 1.00},
+      "Q41_paraphrase":  {"dense_mrr": 1.00, "bm25_mrr": 0.00, "hybrid_mrr": 0.25}
+    },
+    "b3_rrf_k_sweep": {
+      "10":  {"ndcg@10": 0.8156, "hit_rate@5": 1.0000},
+      "30":  {"ndcg@10": 0.7949, "hit_rate@5": 0.9762},
+      "60":  {"ndcg@10": 0.7949, "hit_rate@5": 0.9762},
+      "100": {"ndcg@10": 0.7901, "hit_rate@5": 0.9762}
+    },
+    "b4_unequal_weights_note": "no weighting tested materially beat 1:1 beyond noise at n=42",
+    "b5_headline_finding": {
+      "dense_ndcg@10": 0.8527,
+      "hybrid_ndcg@10": 0.7949,
+      "winner": "dense",
+      "dense_wins_on_n_diff_questions": 20,
+      "bm25_wins_on_n_diff_questions": 6
+    },
+    "winner": "dense"
+  },
+
+  "part_c_rerank": {
+    "base_config": "dense, markdown-400, retrieve k=30 -> rerank -> final k=5",
+    "dense_no_rerank":    {"ndcg@10": 0.8527, "hit_rate@1": 0.7857, "recall@5": 0.9028, "latency_p95_ms": 0.5137},
+    "cross_encoder":      {"ndcg@10": 0.8174, "hit_rate@1": 0.7619, "recall@5": 0.8889, "latency_p95_ms": 106.6301},
+    "llm_rerank":         {"ndcg@10": 0.8649, "hit_rate@1": 0.8810, "recall@5": 0.8869, "latency_p95_ms": 30512.9745, "seconds_per_query": 29.41},
+    "c4_regression_case": {
+      "question_id": "Q32",
+      "question": "Which plans have no co-payment?",
+      "mrr_before": 1.0000,
+      "mrr_after": 0.2000,
+      "reranker": "cross_encoder"
+    },
+    "deployment_decision": {
+      "interactive_search_box": "dense, no rerank",
+      "overnight_batch": "dense + LLM rerank"
+    }
+  },
+
+  "part_d_index": {
+    "d1_exact_vs_hnsw": {
+      "chunks": 235,
+      "exact":  {"hit_rate@1": 0.7857, "hit_rate@5": 0.9762, "recall@5": 0.9028, "mrr": 0.8800, "ndcg@10": 0.8527, "latency_p95_ms": 0.5074},
+      "hnsw":   {"hit_rate@1": 0.7857, "hit_rate@5": 0.9762, "recall@5": 0.9028, "mrr": 0.8800, "ndcg@10": 0.8527, "latency_p95_ms": 2.5548}
+    },
+    "d2_scale_test": "not run (skipped due to time constraints); only ~235-chunk timing reported",
+    "d3_metadata_filter": {
+      "questions": ["Q29", "Q30", "Q31"],
+      "hit_rate@1_before": 0.6667,
+      "hit_rate@1_after": 1.0000
+    }
+  },
+
+  "final_recommended_config": {
+    "chunking": "markdown-aware, size 400",
+    "retrieval": "dense (exact)",
+    "reranking": "none (interactive) / LLM rerank (batch)",
+    "metadata_filter": "status=current applied at query time",
+    "metrics": {"ndcg@10": 0.8527, "recall@5": 0.9028, "hit_rate@1": 0.7857, "latency_p95_ms": 0.51}
+  }
+}
