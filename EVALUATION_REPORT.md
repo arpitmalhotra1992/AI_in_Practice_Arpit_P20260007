@@ -1,6 +1,3 @@
-> Lab 7 report — identical to root `EVALUATION_REPORT.md` (the deliverable two-pager).
-> CI: `.github/workflows/eval.yml` runs the gate with `AIP_OFFLINE=1`; this workspace has no git remote, so the green run and the deliberate-red run (`LAB7_GATE_FINAL_K=1`: correctness 0.613, exit 1) were demonstrated locally with the committed cache instead of as CI screenshots.
-
 # Evaluation Report — Aurora Policy Assistant (RAG service, Labs 3–7)
 
 ## 1. What it does
