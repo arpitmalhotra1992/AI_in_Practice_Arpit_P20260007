@@ -1,69 +1,60 @@
-# Lab 4 — RAG v1: Grounded Answers with Citations — Report
+# Lab 5 — RAG v2: Diagnose, Fix, Prove — Report
 
-## 1. `ANSWER_SYSTEM` and differences from the reference
+## Part A — Failure tally (17 failures of 45) and Pareto
 
-Ours (`labs/lab4/rag.py`) contains all six required elements (T4 §6.1): source-only with general knowledge explicitly forbidden even when confident; cite-by-index `[1]`/`[2][5]`; never cite an unsupplied number; exact refusal string; partial-answer rule (answer supported part with citation, decline rest in refusal-like language, never guess); surface-don't-pick on disagreement; 2–3 sentence discipline; plus `UNTRUSTED_SYSTEM_CLAUSE`.
+`python labs/lab5/diagnose.py --input reports/lab4.json` implements the T4 §5 tree: mode 7 → mode 1 → gold-context split (fixes = retrieval branch, still-wrong = 6) → chunk-rank subdivision (in final = 6-distractor; top-30-only = 4; verbatim probe → 3, else 2-eyes). Correctedness < 2 or invalid citations defines failure (17: nine corr-0 refusals, eight corr-1 partials; citation validity 1.00 so mode 7 = 0).
 
-Differences from `aip/rag.py::ANSWER_SYSTEM`: (1) reference is priority-ordered rules; ours is prose. (2) Reference rule 4 **explicitly permits synthesis** ("combining facts from 2+ sources is synthesis, not general knowledge, and is required for multi-hop"); ours has no synthesis clause — it only forbids general knowledge. This likely contributes to our multi-hop over-refusals (§3): the model treats combining two chunks as risky and refuses. (3) Reference: "every factual sentence must *end* with a citation"; ours: "cite every factual claim *immediately after* the claim". Equivalent in practice. (4) Generation params: ours `max_tokens=512`, prompt `delimit(context)+Question`; reference `max_tokens=600` + `"Answer with citations:"` suffix. (5) Refusal detection: reference `startswith(REFUSAL[:40])`; ours exact match — so a partial answer is `refused=False` in our harness.
+```
+failure mode          n    share   cumulative
+generation            13   76.5%    76.5%  ███████████████████████
+ranking                3   17.6%    88.2%  █████
+embedding_mismatch     1    5.9%   100.0%  ██
+```
 
-## 2. Citation enforcement (B) — validity 1.00
+Modes 1/2/5/7 = 0 (no reranker; nothing missing from the corpus). Two modes cover 94% — concentrated, as expected. Split of the 13: 9 distractor/conflict overload (gold chunk WAS in final-5; clean gold context scores 2: Q19, Q22, Q28, Q29, Q31, Q32, Q35, Q41, Q43) and 4 pure generation (gold still fails: Q05, Q11, Q20 judge-capped partials; Q40 full-refusal-vs-partial). Ranking: Q04 (proxy r21), Q23 (r17), Q44 (r8). Embedding: Q37 only.
 
-`validate_answer()` checks: every `[n]` in range via `aip.guards.enforce_citations`; non-empty; `finish_reason != "length"` (truncation); non-refusal has ≥1 citation. On failure (non-refusal): **retry once** with a corrective message naming the exact reason and the valid index range; if retry also fails, **fall back to exact refusal**. Rationale in code comment: silently returning a bogus citation is the one wrong answer (unverifiable claim reaches a customer); a retry preserves answerable cases, and refusal is always safe and machine-detectable. Result: **citation validity 1.000 (45/45)** — a code guarantee, not model behaviour.
+`answer_in_corpus` was improved (strip REFUSE./PARTIAL prefixes; numbers gate with comma normalisation; stopword filtering). Validation: True on all 40 answerable golds except Q33 (compact "30/60" style — noted limitation, Q33 is corr-2 so harmless) and correctly False on Q36/38/39 (no relevant docs).
 
-## 3. Refusal, both directions (C)
+**A2 human checks.** The proxy-chunk heuristic needed two overrides, both documented in `reports/lab5_diagnosis.json`: Q29 script-proxy m0 (doc header) → true m4 (45-day rule, rank 2, in final; motor-scope distractor caused it); Q31 script-proxy m3 (a *different* 15-day rule — number collision) → true m9 (15-working-days settlement, rank 1, in final; archived conflict caused it). Lesson: number matching without rule-identity verification misattributes; headers outscore rules on word overlap. Q37 proxy m4 verified correct (the outside-India sentence); verbatim probe retrieves `exclusions` at rank 1 while the question ranks it outside top-30 under dense AND hybrid — clean mode 3.
 
-| Setting | Recall (of 5) | Precision (of refusals) |
-|---|---|---|
-| Baseline (as shipped) | **1.000 (5/5)** | **0.417 (5/12)** |
-| Strict (appended "any doubt → refuse; only answer when directly/explicitly stated") | **1.000 (5/5)** | **0.417 (5/12)** |
+## Part B — Ranking by expected value
 
-Both numbers are noisy and reported with counts: 1 case moves recall 0.20, precision ~0.08–0.12. The strict run did **not** move aggregates but churned 8 questions: fixed Q28/Q31/Q32/Q41, broke Q25/Q27/Q34/Q45. Prompt strictness is not a monotonic dial — aggregate equality hides per-question instability.
+| Cluster | n | Fix | Est. recovery | Cost Δ | Latency Δ |
+|---|---|---|---|---|---|
+| G-distractor, archived-caused (Q31) | 1 certain | Exclude `claims-timelines-2024-ARCHIVED` at ingest | 1 (Q31 0→2) | 0 | 0 |
+| G-distractor, scope-caused (Q29 motor, Q41 life) | 2 | Scope-guard prompt (ignore other product lines) | 1–2, uncertain | 0 | 0 |
+| R-rank (Q04 r21, Q23 r17, Q44 r8) | 3 | final_k 5→10 | 1 (Q44 only) | ~+60% context tok | small |
+| R-embed (Q37) + Q23 | 1–2 | Hybrid BM25+dense (RRF) | 1 (Q23 r5; Q37 unproven) | ~0 | +1 ms |
+| G-pure (Q05, Q11, Q20, Q40) | 4 | Prompt completeness/partial rules | ≤1 (Q40 only; rest judge-capped: gold still scores 1) | 0 | 0 |
 
-**Q37 partial.** With retrieved context, top-5 contains none of `exclusions`/`plans-overview` (Lab 3 A4: hit_rate@5 = 0.0) — full refusal is the only safe behaviour given that context. With **gold** context the same generator produces the textbook partial: *"Treatment outside India is excluded except under Platinum's international emergency benefit [1][5][19]. However, I don't have enough information…"* — supported part stated, limit refused. So the prompt works; retrieval blocks it (Failure 3, §6).
+**Pick, one sentence:** Archived exclusion is the only candidate with a certain mechanism, zero cost/latency delta, Lab 3 D3 precedent (Q29–31 hit_rate@1 0.667→1.000), and a blast radius of exactly 3 questions (only Q01/Q30/Q31 ever retrieve the doc).
 
-**Product recommendation: ship the baseline, not stricter.** Recall is already 5/5; stricter cannot improve it and only churns wrongful refusals. One invented claim deadline (customer loses a valid claim, regulatory finding) outweighs many unnecessary refusals (agent spends ~2 min). But 7 wrongful refusals/45 is still expensive — fix them via **retrieval** (archived filtering, §6), not prompt leniency, since loosening the prompt risks the recall that regulation requires.
+**Prediction (written before `--compare` ran):** *"Archived exclusion will recover 1 of the 17 failures (Q31: 0→2), with Q01 and Q30 unchanged at 2 and no other question changing score."*
 
-## 4. Judges and calibration (D)
+## Part C/D — Before/after (`--compare`, same 45 questions, all Lab 4 metrics)
 
-Faithfulness rubric: base + three explicit clauses (arithmetic from context numbers is SUPPORTED; additional correct cited detail is SUPPORTED; wrongful refusal — refusing when context contains the answer — is UNSUPPORTED 0; partial state-and-decline is SUPPORTED). Correctness rubric: improved template (extra correct detail never lowers; only wrong/contradicting extra lowers; refusal handling mechanical: `REFUSE.`-prefixed gold → exact-match scoring, else LLM judge; parse_error → `None`, excluded, never 0).
-
-Stratified calibration sample (n=20: 7 single-hop, 5 multi-hop, 2 aggregation, 2 trap_archived, 2 paraphrase, Q36/Q37/Q40 unanswerable + Q01/Q13), hand-labelled before re-running judges:
-
-| Rubric | Raw agreement | Cohen's κ (n=20) |
-|---|---|---|
-| Faithfulness | 0.55 (11/20) | **−0.10** |
-| Correctness | 0.90 (18/20) | **0.85** |
-
-Correctness passes (substantial; gate ≥0.4). Disagreements: Q05 (human 2 vs judge 1 — annual-only question needs no instalment detail) and Q40 (human 1 vs judge 0 — full refusal omits statable helpline fact; partial credit). Rubric already handles extra detail; no further change.
-
-Faithfulness fails the gate for two honest reasons, both reported: (1) **prevalence paradox** — true faithfulness is 0.978 (44/45), so κ cannot reach 0.4 without multiple true negatives; raw agreement on the easy majority is 19/20. (2) **Systematic disagreement on refusals** — human (strict reading) marks 8 wrongful refusals 0; judge marks all refusals 1 despite the new "wrongful refusal = 0" clause, and still marks Q01 (30d + correct group/archived context) 0 despite the "extra detail is SUPPORTED" clause. The rubric fix did move faithfulness 0.956 → 0.978 (Q25 arithmetic corrected) with zero parse errors, but the judge tier does not reliably follow refusal nuance. Judge numbers are therefore reported with this caveat. **Self-preference:** generator is MAIN (`gemini-3.7-flash`), judges are LARGE (`gemini-3.5-flash`, different family) — not the same model, so self-preference bias is avoided by tier separation; any residual family-level upward bias is small relative to the retrieval gap below.
-
-## 5. Full results (E1) + decomposition (E2)
-
-`python labs/lab4/evaluate.py --full --save reports/lab4.json` (n=45: 40 answerable, 5 unanswerable):
-
-| Metric | Value | Target | Ref |
+| Metric | v1 | v2 archived-filter | Δ |
 |---|---|---|---|
-| Citation validity | **1.000** | 1.00 | 1.000 ✓ |
-| Faithfulness | 0.978 (45/45 scored) | ≥0.90 | 0.933 ✓ |
-| Correctness (norm) | 0.725 (1.45/2) | ≥0.75 | 0.825 ✗ (close) |
-| Refusal recall | 5/5 = 1.000 | ≥4/5 | 5/5 ✓ |
-| Refusal precision | 5/12 = 0.417 | ≥0.70 | 0.714 ✗ |
-| Cost/query | $0.0051 | ≤$0.01 | ✓ |
-| p95 latency | 3522 ms | ≤6000 ms | ✓ |
+| Correctness (norm) | 0.725 | **0.750** | **+0.025** (meets Lab 4 target) |
+| Faithfulness | 0.978 | 1.000 | +0.022 (Q01 judge-0 resolved: extra archived detail gone) |
+| Citation validity | 1.000 | 1.000 | 0 |
+| Refusal recall / precision | 1.000 / 0.417 (5/12) | 1.000 / 0.455 (5/11) | 0 / +0.038 |
+| hit_rate@1 / @5, recall@5, MRR, nDCG@10 | 0.786 / 0.976 / 0.891 / 0.877 / 0.831 | 0.810 / 0.976 / 0.891 / 0.889 / 0.839 | all ≥0 |
+| Cost/query | $0.0000* | $0.0006 | +$0.0006 (≤2× ✓) |
+| p95 latency | 0* / real ~3.5 s (Lab 4) | 2192 ms | within budget |
 
-Weakest kinds: paraphrase 0.40, trap_archived 0.50, aggregation 0.625.
+\*v1 fully cache-hit. Per-question diff: exactly Q01/Q30/Q31 changed — Q31 refusal→correct 15-working-days answer (0→2) ✓; Q01/Q30 stay 2 (Q30's answer got cleaner: conflict note gone, 72 h stated directly). **Prediction confirmed exactly: 1 recovery, 2 protected, 0 other moves.**
 
-E2 (`--gold-context`, n=42 with relevant docs): **A (gold) = 0.929** (generation ceiling), **B (retrieved) = 0.690**, **retrieval loss A−B = 0.238**, **generation loss 1−A = 0.071**. Retrieval is 3.4× the generation loss — **Lab 5 goes to retrieval**, contrary to the CONCEPTS.md note where generation dominated. When given the right docs the generator scores 0.93; the retriever denies it the chance.
+**D2 regression check (v2): nothing got worse.** No question dropped score; no kind regressed; recall held (filtering did not teach the system to answer unanswerables — the removed doc was never load-bearing for a correct refusal).
 
-## 6. Failure tally — Lab 5 backlog (E3, 10 wrong answers)
+## The fix that did not work: hybrid BM25+dense (−0.037)
 
-| Q | Symptom | Mode (T4 §5) |
-|---|---|---|
-| Q37 | relevant docs rank outside top 5 (hit_rate@5=0) | 3 embedding |
-| Q44 | `plan-silver::m1` (answer) loses to `::m0` (UIN string) on exact ID (dense MRR 0.5; BM25 1.0 per Lab 3) | 3 embedding |
-| Q23, Q28, Q31, Q32, Q41, Q43 | relevant docs/chunks in top 5, model refuses | 6 generation (over-refusal) |
-| Q40 | helpline doc retrieved (rank 3), full refusal instead of partial | 6 generation |
-| Q22 | answers but adds irrelevant 30-day claim, omits day-one cover | 6 generation |
+Second, alone, as the reflex-retrieval-fix control the handout warns about: correctness 0.725→**0.688 (−0.037)**, nDCG@10 −0.079, hit_rate@1 −0.119, precision 0.417→0.385 (+1 refusal), cost $0.0108/query (**2.1× baseline — violates the ≤2× discipline**). Improved 3 (Q28 0→2, Q31 0→2, Q32 0→1) but worsened 6 (Q20 1→0, Q21 2→0, Q22 1→0, Q26 2→1, Q33 2→1, Q45 2→0). Notably Q23 — the one case the retrieval-only probe predicted hybrid would save (proxy r17→r5) — did **not** recover: probe used the k=30 pool while the pipeline reranks a k=12 pool, so the probe overpromised. Mechanism: on this corpus dense alone already outranks BM25 almost everywhere (Lab 3 B5), so fusion imports BM25's losses more often than its wins. Fix and tally agreed (tally said generation/distractor, not lexical mismatch) — the tally was right.
 
-Tally: **Failure 6 ×8, Failure 3 ×2**, Failures 1/2/4/5/7 ×0 (no missing content among failures; no reranker; citation validity 1.0). Backlog: (i) filter `ARCHIVED` + group-scope distractors at query time (fixes Q01/Q30-style conflicts and Q31); (ii) hybrid/lexical path for exact IDs (Q44) and Q37-style vocabulary mismatch; (iii) add the missing synthesis licence to the prompt (multi-hop refusals).
+## D3 — Re-classification of the 16 survivors
+
+Shape unchanged, as predicted: generation 12 (4 pure + 8 distractor), ranking 3, embedding 1 — Q31 simply left the distractor cluster; no failure migrated modes (the fix removed a failure instead of revealing a masked one, since the archived chunk is gone from every context rather than replaced).
+
+## D4 — Next fix
+
+Prompt scope-guard + synthesis licence ("ignore motor/life/travel/group-corporate chunks unless asked; combining two chunks is synthesis, not guessing; partial answers earn credit") targeting the remaining wrongful refusals with in-context answers (Q28, Q32, Q41, Q43) and Q40's partial. Worth an estimated 2–3 recoveries at zero cost; Q05/Q11/Q20 are deliberately excluded (gold-capped — no prompt recovers them under the current judge).
